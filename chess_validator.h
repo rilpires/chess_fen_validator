@@ -179,12 +179,12 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
     for( int i = 0 ; i < 5 ; i++ ){
         if( i==5 ) return false; 
         switch (fen_string[string_iterator++]){
-            case 'K':  table_state.white_king_castling  = true ; break;
-            case 'Q':  table_state.white_queen_castling = true ; break;
-            case 'k':  table_state.black_king_castling  = true ; break;
-            case 'q':  table_state.black_queen_castling = true ; break;
-            case '-':
-            case ' ':  break; break;
+            case 'K':   table_state.white_king_castling  = true ; break;
+            case 'Q':   table_state.white_queen_castling = true ; break;
+            case 'k':   table_state.black_king_castling  = true ; break;
+            case 'q':   table_state.black_queen_castling = true ; break;
+            case '-':   i = 6 ; break;
+            case ' ':   i = 6 ; break;
             default: return false;
         }
     }
@@ -297,7 +297,9 @@ const char*     to_fen_string( TableState* ptr_table_state ){
         if( x==7 && y!=7){
             if( white_space_count ) buff[string_iterator++] = white_space_count + 48; // int to ascii character
             buff[string_iterator++] = '/';
-        }    
+        } else if ( index == 63 && white_space_count ) {
+            buff[string_iterator++] = white_space_count+48;
+        }
     }
 
     buff[string_iterator++] = ' ';
@@ -306,9 +308,9 @@ const char*     to_fen_string( TableState* ptr_table_state ){
     
     buff[string_iterator++] = ' ';
     if( !(ptr_table_state->black_king_castling 
-        && ptr_table_state->black_queen_castling 
-        && ptr_table_state->white_king_castling 
-        && ptr_table_state->white_queen_castling))
+        || ptr_table_state->black_queen_castling 
+        || ptr_table_state->white_king_castling 
+        || ptr_table_state->white_queen_castling))
         buff[string_iterator++] = '-';
     else{
         if( ptr_table_state->white_king_castling  ) buff[string_iterator++] = 'K';
@@ -351,6 +353,25 @@ TableState      apply_move( TableState* ptr_table_state , int source_index , int
     TableState ret = *ptr_table_state;
     int delta_index = target_index - source_index;
     int source_square = old_state.map[source_index];
+    
+    // Ending castling ability
+    if( source_square & COLOR_WHITE ){
+        if( source_square & TYPE_KING ){
+            ret.white_king_castling = false;
+            ret.white_queen_castling = false;
+        } else if ( source_square & TYPE_ROOK ){
+            if( source_index == 56 ) ret.white_queen_castling = false;
+            if( source_index == 63 ) ret.white_king_castling = false;
+        }
+    } else if( source_square & COLOR_BLACK ){
+        if( source_square & TYPE_KING ){
+            ret.black_king_castling = false;
+            ret.black_queen_castling = false;
+        } else if ( source_square & TYPE_ROOK ){
+            if( source_index == 0 ) ret.black_queen_castling = false;
+            if( source_index == 7 ) ret.black_king_castling = false;
+        }
+    }
     
     if( old_state.map[target_index] || source_square&TYPE_PAWN ){ 
         ret.half_move_clock = 0; 
@@ -419,7 +440,7 @@ const char*     apply_move( const char* fen_string , const char* move ){
     return to_fen_string(&ts);
 }
 int64           fill_available_targets( TableState* ptr_table_state , int player_color ){
-    int64 ret;
+    int64 ret = 0;
     for( int x = 0 ; x < 8 ; x++ )
     for( int y = 0 ; y < 8 ; y++ )
     {
@@ -428,13 +449,13 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
         if( square && (square&player_color) ){
             if( square & TYPE_PAWN ){
                 if( player_color==COLOR_WHITE && y > 0 ){
-                    if(x<7) ret |= (1<<(index-7));
-                    if(x>0) ret |= (1<<(index-9));
+                    if(x<7) ret |= (1ULL<<(index-7));
+                    if(x>0) ret |= (1ULL<<(index-9));
                 }
                 else 
                 if( player_color==COLOR_BLACK && y < 7 ){
-                    if(x>0) ret |= (1<<(index+7));
-                    if(x<7) ret |= (1<<(index+9));
+                    if(x>0) ret |= (1ULL<<(index+7));
+                    if(x<7) ret |= (1ULL<<(index+9));
                 }
             } else if( square & TYPE_KNIGHT ){
                 int dxs[] = {-2,-2,-1,-1,1,1,2,2};
@@ -443,7 +464,7 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
                     int dx = dxs[j] , dy = dys[j];
                     if( x+dx>=0 && x+dx <=7 && y+dy>=0 && y+dy <=7 ){
                         int target_index = (x+dx) + (y+dy)*8;
-                        ret |= (1<<target_index);
+                        ret |= (1ULL<<target_index);
                     }
                 }
             } else if( square & TYPE_ROOK ){
@@ -452,10 +473,11 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
                 for( int j = 0 ; j < 4 ; j++ ){
                     int dx = dxs[j] , dy = dys[j];
                     for( int steps = 1 ; x+dx*steps>=0 && x+dx*steps <=7 && y+dy*steps>=0 && y+dy*steps <=7 ; steps++ ){
-                        int target_index = (x+dx) + (y+dy)*8;
-                        if(  (ptr_table_state->map[target_index] & player_color) ) break;
-                        ret |= (1<<target_index);
-                        if( !(ptr_table_state->map[target_index] & player_color) ) break;
+                        int target_index = (x+dx*steps) + (y+dy*steps)*8;
+                        int target_square = ptr_table_state->map[target_index];
+                        if( target_square & player_color ) break;
+                        ret |= (1ULL<<target_index);
+                        if( target_square && !(target_square & player_color) ) break;
                     }
                 }
             } else if( square & TYPE_BISHOP ){
@@ -464,10 +486,11 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
                 for( int j = 0 ; j < 4 ; j++ ){
                     int dx = dxs[j] , dy = dys[j];
                     for( int steps = 1 ; x+dx*steps>=0 && x+dx*steps <=7 && y+dy*steps>=0 && y+dy*steps <=7 ; steps++ ){
-                        int target_index = (x+dx) + (y+dy)*8;
-                        if(  (ptr_table_state->map[target_index] & player_color) ) break;
-                        ret |= (1<<target_index);
-                        if( !(ptr_table_state->map[target_index] & player_color) ) break;
+                        int target_index = (x+dx*steps) + (y+dy*steps)*8;
+                        int target_square = ptr_table_state->map[target_index];
+                        if( target_square & player_color ) break;
+                        ret |= (1ULL<<target_index);
+                        if( target_square && !(target_square & player_color) ) break;
                     }
                 }
             } else if( square & TYPE_QUEEN ){
@@ -476,10 +499,11 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
                 for( int j = 0 ; j < 8 ; j++ ){
                     int dx = dxs[j] , dy = dys[j];
                     for( int steps = 1 ; x+dx*steps>=0 && x+dx*steps <=7 && y+dy*steps>=0 && y+dy*steps <=7 ; steps++ ){
-                        int target_index = (x+dx) + (y+dy)*8;
-                        if(  (ptr_table_state->map[target_index] & player_color) ) break;
-                        ret |= (1<<target_index);
-                        if( !(ptr_table_state->map[target_index] & player_color) ) break;
+                        int target_index = (x+dx*steps) + (y+dy*steps)*8;
+                        int target_square = ptr_table_state->map[target_index];
+                        if( target_square & player_color ) break;
+                        ret |= (1ULL<<target_index);
+                        if( target_square && !(target_square & player_color) ) break;
                     }
                 }
             } else if( square & TYPE_KING ){
@@ -490,7 +514,7 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
                     if( x+dx>=0 && x+dx <=7 && y+dy>=0 && y+dy <=7 ){
                         int target_index = (x+dx) + (y+dy)*8;
                         if(  (ptr_table_state->map[target_index] & player_color) ) break;
-                        ret |= (1<<target_index);
+                        ret |= (1ULL<<target_index);
                     }
                 }
             }
@@ -502,11 +526,11 @@ bool            king_is_in_check(TableState* ptr_table_state , int king_color ){
     TableState& table_state = *ptr_table_state;
     int king_index=-1;
     for( int i = 0 ; i < 64 && king_index==-1 ; i++ )
-        if( table_state.map[i] & (TYPE_KING + king_color) )
+        if( table_state.map[i] == (TYPE_KING|king_color) )
             king_index = i;
     int opponent_color = ( (king_color == COLOR_BLACK) ?(COLOR_WHITE):(COLOR_BLACK));
     int64 danger_zone = fill_available_targets(ptr_table_state,opponent_color);
-    return (danger_zone & king_index);
+    return danger_zone & (1ULL<<king_index);
 }
 INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , int target_index  ){
     TableState& table_state = *ptr_table_state;
@@ -525,7 +549,7 @@ INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , 
     int delta_x = target_x - source_x;
     int delta_y = target_y - source_y;
     int delta_index = target_index - source_index;
-    
+
     if( !source_square ) return NO_UNIT;
 
     if( (source_square&COLOR_BLACK) && table_state.next_color_to_play == COLOR_WHITE ) return NOT_PLAYER_TURN;
@@ -587,7 +611,14 @@ INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , 
     
     }
     else if ( source_square & SQUARE::TYPE_KING ){
-        if( abs(delta_x) + abs(delta_y) != 1 ) return INVALID_UNIT_MOVE;
+        bool black_king_castling  = table_state.black_king_castling && (source_square&COLOR_BLACK) && (table_state.map[7]&COLOR_BLACK) && (table_state.map[7]&TYPE_ROOK) && source_index == 4 && target_index == 6 && (table_state.map[5]==0) && (table_state.map[6]==0) ;
+        bool black_queen_castling = table_state.black_queen_castling && (source_square&COLOR_BLACK) && (table_state.map[0]&COLOR_BLACK) && (table_state.map[0]&TYPE_ROOK) && source_index == 4 && target_index == 2 && (table_state.map[1]==0) && (table_state.map[2]==0) && (table_state.map[3]==0) ;
+        bool white_king_castling  = table_state.white_king_castling && (table_state.map[63]&COLOR_WHITE) && (table_state.map[63]&COLOR_WHITE) && (target_square&TYPE_ROOK) && source_index == 60 && target_index == 62 && (table_state.map[61]==0) && (table_state.map[62]==0) ;
+        bool white_queen_castling = table_state.white_queen_castling && (table_state.map[56]&COLOR_WHITE) && (table_state.map[56]&COLOR_WHITE) && (target_square&TYPE_ROOK) && source_index == 60 && target_index == 58 && (table_state.map[57]==0) && (table_state.map[58]==0) && (table_state.map[59]==0) ;
+        
+        bool any_castling = ( black_king_castling || black_queen_castling || white_king_castling || white_queen_castling );
+        if( !any_castling && ( abs(delta_x)>1 || abs(delta_y)>1 ) ) 
+            return INVALID_UNIT_MOVE;
     } 
 
     int current_player_color = ptr_table_state->next_color_to_play;
