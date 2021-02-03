@@ -38,6 +38,13 @@ enum INVALID_REASON : int {
     KING_IN_CHECK
 };
 
+enum DRAW_REASON : int {
+    NO_DRAW = 0 ,
+    STALEMATE ,
+    INSUFFICIENT_MATERIAL ,
+    SEVENTYFIVE_MOVES 
+};
+
 struct TableState {
     unsigned char map[64];
     char next_color_to_play;
@@ -45,9 +52,47 @@ struct TableState {
     bool white_queen_castling = false;
     bool black_king_castling = false;
     bool black_queen_castling = false;
-    unsigned char en_passant = 0;
+    unsigned char en_passant = -1;
     char half_move_clock = 0;
     int move_counter = 0;
+
+    struct AvailableMoveIterator {
+        unsigned char source_index , target_index;
+        AvailableMoveIterator* next = nullptr;
+    };
+    AvailableMoveIterator *first = nullptr , *last = nullptr;
+    
+    void operator=( const TableState& other ){
+        for( int i = 0 ; i < 64 ; i++ )map[i] = other.map[i];
+        next_color_to_play = other.next_color_to_play;
+        white_king_castling = other.white_king_castling;
+        white_queen_castling = other.white_queen_castling;
+        black_king_castling = other.black_king_castling;
+        black_queen_castling = other.black_queen_castling;
+        en_passant = other.en_passant;
+        half_move_clock = other.half_move_clock;
+        move_counter = other.move_counter;
+        first = nullptr;
+        last = nullptr;
+    }
+
+    TableState(){
+        first = nullptr;
+        last = nullptr;
+    }
+    TableState( const TableState& other ) : TableState() {
+        (*this) = other;
+        first = nullptr;
+        last = nullptr;
+    }
+    ~TableState(){
+        auto it = first;
+        while(it){
+            auto temp = it->next;
+            delete it;
+            it = temp;
+        }
+    };
 };
 
 char buff[512];
@@ -210,7 +255,8 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
                 default: return false;
             }
     }
-    if( en_passant_square != 0 ){ table_state.en_passant = en_passant_square; }
+    if( en_passant_square != 0 )    table_state.en_passant = en_passant_square;
+    else                            table_state.en_passant = -1;
     
     while( fen_string[string_iterator] == ' ' )string_iterator++;
     
@@ -225,7 +271,18 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
     return true;
 
 }
-
+void            push_available_move( TableState* ptr_table_state , unsigned char source_index , unsigned char target_index ){
+    TableState::AvailableMoveIterator* n = new TableState::AvailableMoveIterator();
+    n->source_index = source_index;
+    n->target_index = target_index;
+    if( ptr_table_state->first == nullptr ){
+        ptr_table_state->first = n;
+        ptr_table_state->last = n;
+    } else {
+        ptr_table_state->last->next = n;
+        ptr_table_state->last = n;
+    }
+};
 int             get_index_from_notation( const char* str ){
     int ret = 0;
     switch( str[0] ){
@@ -347,54 +404,84 @@ const char*     to_fen_string( TableState* ptr_table_state ){
 
     return buff;
 }
-TableState      apply_move( TableState* ptr_table_state , int source_index , int target_index ){
+TableState      apply_move( TableState* ptr_table_state , int source_index , int target_index , int promotion_unit ){
     // Assumes that move is valid. Unexpected behavior if not!
     TableState& old_state = *ptr_table_state;
     TableState ret = *ptr_table_state;
     int delta_index = target_index - source_index;
     int source_square = old_state.map[source_index];
+    int target_square = old_state.map[target_index];
     
     // Ending castling ability
     if( source_square & COLOR_WHITE ){
         if( source_square & TYPE_KING ){
             ret.white_king_castling = false;
             ret.white_queen_castling = false;
-        } else if ( source_square & TYPE_ROOK ){
+        } 
+        else if ( source_square & TYPE_ROOK ){
             if( source_index == 56 ) ret.white_queen_castling = false;
             if( source_index == 63 ) ret.white_king_castling = false;
         }
-    } else if( source_square & COLOR_BLACK ){
+    } 
+    else if( source_square & COLOR_BLACK ){
         if( source_square & TYPE_KING ){
             ret.black_king_castling = false;
             ret.black_queen_castling = false;
-        } else if ( source_square & TYPE_ROOK ){
+        } 
+        else if ( source_square & TYPE_ROOK ){
             if( source_index == 0 ) ret.black_queen_castling = false;
             if( source_index == 7 ) ret.black_king_castling = false;
         }
     }
-    
+    if( target_square & TYPE_ROOK ){
+        if( target_square & COLOR_WHITE ){
+            if(target_index == 56) ret.white_queen_castling = false;
+            if(target_index == 63) ret.white_king_castling = false;
+        }
+        else if( target_square & COLOR_BLACK ){
+            if(target_index == 0) ret.black_queen_castling = false;
+            if(target_index == 7) ret.black_king_castling = false;
+        }
+    }
+
+    // Counting clock on moves
     if( old_state.map[target_index] || source_square&TYPE_PAWN ){ 
         ret.half_move_clock = 0; 
-    } else {
+    } 
+    else {
         ret.half_move_clock ++;
     }
+    
+    // Toggling color turn
     if( old_state.next_color_to_play == COLOR_BLACK ){
         ret.next_color_to_play = COLOR_WHITE;
         ret.move_counter++;
-    } else {
+    } 
+    else {
         ret.next_color_to_play = COLOR_BLACK;
     }
 
     ret.map[source_index] = 0;
     ret.map[target_index] = old_state.map[source_index];
+    
+    // Promotion
+    if( (source_square&TYPE_PAWN) ){
+        bool promoting = false;
+        if( source_square&COLOR_WHITE && target_index>=0 && target_index<=7 ) promoting = true ;
+        if( source_square&COLOR_BLACK && target_index>=56 && target_index<=63 ) promoting = true ;
+        if( promoting ) ret.map[target_index] = promotion_unit + (source_square&(COLOR_WHITE+COLOR_BLACK));
+    }
 
+    // En passant opportunity
     if( source_square&TYPE_PAWN && abs(delta_index)==16 ){
         if( source_square&COLOR_WHITE ) ret.en_passant = source_index-8;
         if( source_square&COLOR_BLACK ) ret.en_passant = source_index+8;
-    } else {
-        ret.en_passant = 0;
+    } 
+    else {
+        ret.en_passant = -1;
     }
     
+    // Castling execution
     if( source_square&TYPE_KING && abs(delta_index)==2 ){
         if( source_square&COLOR_WHITE ){
             if(delta_index>0){
@@ -430,8 +517,16 @@ TableState      apply_move( TableState* ptr_table_state , const char* move ){
     // Assumes that move is valid. Unexpected behavior if not!
     int source_index = get_index_from_notation( move );
     int target_index = get_index_from_notation( &(move[2]) );
+    int promotion = 0;
+    switch( move[4] ){
+        case 'q': promotion = TYPE_QUEEN; break;
+        case 'n': promotion = TYPE_KNIGHT; break;
+        case 'b': promotion = TYPE_BISHOP; break;
+        case 'r': promotion = TYPE_ROOK; break;
+        default:  promotion = TYPE_QUEEN; break; // If not specified, consider promotion as queen
+    }
     
-    return apply_move( ptr_table_state , source_index , target_index );
+    return apply_move( ptr_table_state , source_index , target_index , promotion );
 }
 const char*     apply_move( const char* fen_string , const char* move ){
     TableState ts;
@@ -441,8 +536,8 @@ const char*     apply_move( const char* fen_string , const char* move ){
 }
 int64           fill_available_targets( TableState* ptr_table_state , int player_color ){
     int64 ret = 0;
-    for( int x = 0 ; x < 8 ; x++ )
     for( int y = 0 ; y < 8 ; y++ )
+    for( int x = 0 ; x < 8 ; x++ )
     {
         int index = x + 8*y;
         int square = ptr_table_state->map[index];
@@ -522,7 +617,7 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
     }
     return ret;
 }
-bool            king_is_in_check(TableState* ptr_table_state , int king_color ){
+bool            is_king_in_check(TableState* ptr_table_state , int king_color ){
     TableState& table_state = *ptr_table_state;
     int king_index=-1;
     for( int i = 0 ; i < 64 && king_index==-1 ; i++ )
@@ -532,9 +627,8 @@ bool            king_is_in_check(TableState* ptr_table_state , int king_color ){
     int64 danger_zone = fill_available_targets(ptr_table_state,opponent_color);
     return danger_zone & (1ULL<<king_index);
 }
-INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , int target_index  ){
+INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index , int target_index  ){
     TableState& table_state = *ptr_table_state;
-    
     if( target_index == source_index ) return SAME_PLACE;
 
     int source_square = table_state.map[source_index];
@@ -568,8 +662,13 @@ INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , 
                 return INVALID_UNIT_MOVE;
         } else {
             if( abs(delta_x) > 0 ) return INVALID_UNIT_MOVE;
-            if( abs(delta_y) > 1 + 1*first_move )
-                return INVALID_UNIT_MOVE;
+            if( first_move ){
+                if( abs(delta_y) > 2 ) return INVALID_UNIT_MOVE;
+                if( abs(delta_y) == 2 ){
+                    if( table_state.map[source_index+delta_index/2] ) 
+                        return INVALID_UNIT_MOVE; // Can't jump over units
+                }
+            }
         }
     } 
     else if ( source_square & SQUARE::TYPE_KNIGHT ){
@@ -613,8 +712,8 @@ INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , 
     else if ( source_square & SQUARE::TYPE_KING ){
         bool black_king_castling  = table_state.black_king_castling && (source_square&COLOR_BLACK) && (table_state.map[7]&COLOR_BLACK) && (table_state.map[7]&TYPE_ROOK) && source_index == 4 && target_index == 6 && (table_state.map[5]==0) && (table_state.map[6]==0) ;
         bool black_queen_castling = table_state.black_queen_castling && (source_square&COLOR_BLACK) && (table_state.map[0]&COLOR_BLACK) && (table_state.map[0]&TYPE_ROOK) && source_index == 4 && target_index == 2 && (table_state.map[1]==0) && (table_state.map[2]==0) && (table_state.map[3]==0) ;
-        bool white_king_castling  = table_state.white_king_castling && (table_state.map[63]&COLOR_WHITE) && (table_state.map[63]&COLOR_WHITE) && (target_square&TYPE_ROOK) && source_index == 60 && target_index == 62 && (table_state.map[61]==0) && (table_state.map[62]==0) ;
-        bool white_queen_castling = table_state.white_queen_castling && (table_state.map[56]&COLOR_WHITE) && (table_state.map[56]&COLOR_WHITE) && (target_square&TYPE_ROOK) && source_index == 60 && target_index == 58 && (table_state.map[57]==0) && (table_state.map[58]==0) && (table_state.map[59]==0) ;
+        bool white_king_castling  = table_state.white_king_castling && (source_square&COLOR_WHITE) && (table_state.map[63]&COLOR_WHITE) && (table_state.map[63]&TYPE_ROOK) && source_index == 60 && target_index == 62 && (table_state.map[61]==0) && (table_state.map[62]==0) ;
+        bool white_queen_castling = table_state.white_queen_castling && (source_square&COLOR_WHITE) && (table_state.map[56]&COLOR_WHITE) && (table_state.map[56]&TYPE_ROOK) && source_index == 60 && target_index == 58 && (table_state.map[57]==0) && (table_state.map[58]==0) && (table_state.map[59]==0) ;
         
         bool any_castling = ( black_king_castling || black_queen_castling || white_king_castling || white_queen_castling );
         if( !any_castling && ( abs(delta_x)>1 || abs(delta_y)>1 ) ) 
@@ -622,27 +721,184 @@ INVALID_REASON  is_move_valid( TableState* ptr_table_state , int source_index , 
     } 
 
     int current_player_color = ptr_table_state->next_color_to_play;
-    TableState next_state = apply_move( ptr_table_state , source_index , target_index );
-    bool king_in_check = king_is_in_check(&next_state,current_player_color);
+    TableState next_state = apply_move( ptr_table_state , source_index , target_index , TYPE_QUEEN );
+    bool king_in_check = is_king_in_check(&next_state,current_player_color);
 
     if( king_in_check ) return KING_IN_CHECK;
     
     return VALID;
 }
-INVALID_REASON  is_move_valid( TableState* ptr_table_state , const char* move  ){
+INVALID_REASON  is_move_invalid( TableState* ptr_table_state , const char* move  ){
     int source_index = 0 ;
     int target_index = 0 ;
     source_index = get_index_from_notation(move);
     target_index = get_index_from_notation(&move[2]);
-    return is_move_valid(ptr_table_state,source_index,target_index);
+    return is_move_invalid(ptr_table_state,source_index,target_index);
 }
-INVALID_REASON  is_move_valid( const char* fen_string , const char* move  ){
+INVALID_REASON  is_move_invalid( const char* fen_string , const char* move  ){
     TableState table_state;
     if( !get_table_state( fen_string , &table_state ) ) return INVALID_FEN_STRING;
-    return is_move_valid(&table_state, move );
+    return is_move_invalid(&table_state, move );
 }
 
- 
+void            fill_valid_moves( TableState* ptr_table_state ){
+    if( ptr_table_state->first ) return;
+    
+    for( int y = 0 ; y < 8 ; y++ )
+    for( int x = 0 ; x < 8 ; x++ )
+    {
+        int source_index = x + 8*y;
+        unsigned char source_square = ptr_table_state->map[source_index];
+        if( source_square & ptr_table_state->next_color_to_play ){
+            switch( source_square & ( TYPE_PAWN|TYPE_KNIGHT|TYPE_BISHOP|TYPE_ROOK|TYPE_KING|TYPE_QUEEN ) ){
+                case TYPE_PAWN:
+                    for( int delta_x = -1 ; delta_x <= 1 ; delta_x ++ )
+                    for( int delta_y = -2 ; delta_y <= 2 ; delta_y ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+                case TYPE_KNIGHT:
+                    for( int delta_x = -2 ; delta_x <= 2 ; delta_x ++ )
+                    for( int delta_y = -2 ; delta_y <= 2 ; delta_y ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+                case TYPE_BISHOP:
+                    for( int delta = 1 ; delta <= 7 ; delta++ )
+                    for( int delta_x = -delta ; delta_x <= delta ; delta_x += 2*delta )
+                    for( int delta_y = -delta ; delta_y <= delta ; delta_y += 2*delta )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+
+                case TYPE_ROOK:
+                    for( int delta_x = -7 , delta_y = 0 ; delta_x <= 7 ; delta_x ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    for( int delta_y = -7 , delta_x = 0 ; delta_y <= 7 ; delta_y ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+
+                case TYPE_QUEEN:
+                    for( int delta_x = -7 ; delta_x <= 7 ; delta_x ++ )
+                    for( int delta_y = -7 ; delta_y <= 7 ; delta_y ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+                case TYPE_KING:
+                    for( int delta_x = -1 ; delta_x <= 1 ; delta_x ++ )
+                    for( int delta_y = -1 ; delta_y <= 1 ; delta_y ++ )
+                    if( x+delta_x >= 0 && x+delta_x <= 7 && y+delta_y >= 0 && y+delta_y <= 7 ){
+                        int target_index = x+delta_x + 8*(y+delta_y);
+                        if( is_move_invalid(ptr_table_state,source_index,target_index) == VALID ){
+                            push_available_move(ptr_table_state,source_index,target_index);
+                        }
+                    }
+                    break;
+
+            }
+        }
+    }
+}
+
+bool            is_check_mate( TableState* ptr_table_state ){
+    if( is_king_in_check(ptr_table_state,ptr_table_state->next_color_to_play) == false ) return false;
+    fill_valid_moves( ptr_table_state );
+    return ptr_table_state->first == nullptr;
+}
+bool            is_check_mate( const char* fen_string ){
+    TableState ts;
+    get_table_state(fen_string,&ts);
+    return is_check_mate( &ts );
+}
+
+DRAW_REASON     get_draw_reason( TableState* ptr_table_state ){
+    if( ptr_table_state->move_counter >= 75 ){
+        return DRAW_REASON::SEVENTYFIVE_MOVES;
+    }
+    int white_even_bishops = 0;
+    int white_odd_bishops = 0;
+    int white_knights = 0;
+    int black_even_bishops = 0;
+    int black_odd_bishops = 0;
+    int black_knights = 0;
+    bool rook = false;
+    bool queen = false;
+    bool pawn = false;
+    for( int index = 0 ; index < 64 ; index++ ){
+        int square = ptr_table_state->map[index];
+        if( square&TYPE_QUEEN ){
+            queen = true;
+            break;
+        }
+        else if( square & TYPE_ROOK ){
+            rook = true;
+            break;
+        }
+        else if( square & TYPE_PAWN ){
+            pawn = true;
+            break;
+        }
+        else if( square & COLOR_BLACK ){
+            if( square & TYPE_KNIGHT ){
+                black_knights++;
+            } else if( square & TYPE_BISHOP ){
+                if( ( index/8 + index%8 )%2==0 )black_even_bishops++;
+                if( ( index/8 + index%8 )%2==1 )black_odd_bishops++;
+            }
+        }
+        else if( square & COLOR_WHITE ){
+            if( square & TYPE_KNIGHT ){
+                white_knights++;
+            } else if( square & TYPE_BISHOP ){
+                if( ( index/8 + index%8 )%2==0 )white_even_bishops++;
+                if( ( index/8 + index%8 )%2==1 )white_odd_bishops++;
+            }
+        }
+    }
+    if( !rook && !queen && !pawn ){
+        bool white_lone_king = (white_odd_bishops==0 && white_even_bishops==0 && white_knights==0 );
+        bool black_lone_king = (black_odd_bishops==0 && black_even_bishops==0 && black_knights==0 );
+
+        bool white_has_material = ( white_knights==2 && black_lone_king ) || (white_odd_bishops && white_even_bishops);
+        bool black_has_material = ( black_knights==2 && white_lone_king ) || (black_odd_bishops && black_even_bishops);
+
+        if( !white_has_material && !black_has_material ){
+            return DRAW_REASON::INSUFFICIENT_MATERIAL;
+        }
+    }
+
+    fill_valid_moves(ptr_table_state);
+    if( !is_king_in_check(ptr_table_state,ptr_table_state->next_color_to_play) && ptr_table_state->first==nullptr )
+        return DRAW_REASON::STALEMATE;
+
+    return DRAW_REASON::NO_DRAW;
+}
 
 }
 

@@ -1,3 +1,13 @@
-See demo.cpp, it is really straightforward: you pass a fen string and a move in long algebric notation. If it is valid, you can also apply the move and get the new fen string.
+See demo.cpp, it is really straightforward:
 
-Only remaining to-do is specific promotions (b7b8q , b7b8n , etc )
+- You construct a TableState object from a fen string using get_table_state.
+- If it was valid (check value returned), you can call some functions like:
+    - is_king_in_check
+    - is_checkmate
+    - get_draw_reason
+        - Returns enum of draw reason.
+    - is_move_invalid                    
+        - Returns enum of invalid reason.
+    - apply_move(TableState*,const char*)
+        - Returns a new table state. [b]Check beforehand if move is valid[/b], unexpected behavior if not!
+
