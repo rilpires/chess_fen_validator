@@ -52,7 +52,7 @@ struct TableState {
     bool white_queen_castling = false;
     bool black_king_castling = false;
     bool black_queen_castling = false;
-    unsigned char en_passant = -1;
+    char en_passant_index = -1;
     char half_move_clock = 0;
     int move_counter = 0;
 
@@ -69,7 +69,7 @@ struct TableState {
         white_queen_castling = other.white_queen_castling;
         black_king_castling = other.black_king_castling;
         black_queen_castling = other.black_queen_castling;
-        en_passant = other.en_passant;
+        en_passant_index = other.en_passant_index;
         half_move_clock = other.half_move_clock;
         move_counter = other.move_counter;
         first = nullptr;
@@ -255,8 +255,8 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
                 default: return false;
             }
     }
-    if( en_passant_square != 0 )    table_state.en_passant = en_passant_square;
-    else                            table_state.en_passant = -1;
+    if( en_passant_square != 0 )    table_state.en_passant_index = en_passant_square;
+    else                            table_state.en_passant_index = -1;
     
     while( fen_string[string_iterator] == ' ' )string_iterator++;
     
@@ -377,9 +377,9 @@ const char*     to_fen_string( TableState* ptr_table_state ){
     }
 
     buff[string_iterator++] = ' ';
-    if( ptr_table_state->en_passant ){
+    if( ptr_table_state->en_passant_index >= 0 ){
         char en_passant_notation[2];
-        get_notation_from_index(ptr_table_state->en_passant,en_passant_notation);
+        get_notation_from_index(ptr_table_state->en_passant_index,en_passant_notation);
         buff[string_iterator++] = en_passant_notation[0];
         buff[string_iterator++] = en_passant_notation[1];
     }else{
@@ -474,11 +474,11 @@ TableState      apply_move( TableState* ptr_table_state , int source_index , int
 
     // En passant opportunity
     if( source_square&TYPE_PAWN && abs(delta_index)==16 ){
-        if( source_square&COLOR_WHITE ) ret.en_passant = source_index-8;
-        if( source_square&COLOR_BLACK ) ret.en_passant = source_index+8;
+        if( source_square&COLOR_WHITE ) ret.en_passant_index = source_index-8;
+        if( source_square&COLOR_BLACK ) ret.en_passant_index = source_index+8;
     } 
     else {
-        ret.en_passant = -1;
+        ret.en_passant_index = -1;
     }
     
     // Castling execution
@@ -656,7 +656,7 @@ INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index 
         bool white_first_move = (source_square&COLOR_WHITE) && source_y == 6;
         bool first_move = black_first_move || white_first_move;
         bool capturing = target_square;
-        capturing = capturing || ( target_index == table_state.en_passant ); 
+        capturing = capturing || ( target_index == table_state.en_passant_index ); 
         if( capturing ){
             if( abs(delta_index)!=9 && abs(delta_index)!=7 )
                 return INVALID_UNIT_MOVE;
