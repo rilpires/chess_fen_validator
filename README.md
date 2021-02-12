@@ -9,5 +9,5 @@ See demo.cpp, it is really straightforward:
     - is_move_invalid                    
         - Returns enum of invalid reason.
     - apply_move(TableState*,const char*)
-        - Returns a new table state. [b]Check beforehand if move is valid[/b], unexpected behavior if not!
+        - Returns a new table state. **Check beforehand if move is valid**, unexpected behavior if not!
 
