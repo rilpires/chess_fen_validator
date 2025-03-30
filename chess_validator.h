@@ -238,22 +238,21 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
 
     // Fourth field: EN passant field
     int en_passant_square = 0;
-    switch (fen_string[string_iterator++]){
-        case '-': break;
-        case 'h': en_passant_square += 7; break;
-        case 'g': en_passant_square += 6; break;
-        case 'f': en_passant_square += 5; break;
-        case 'e': en_passant_square += 4; break;
-        case 'd': en_passant_square += 3; break;
-        case 'c': en_passant_square += 2; break;
-        case 'b': en_passant_square += 1; break;
-        case 'a': en_passant_square += 0; break;
-        default:
-            switch( fen_string[string_iterator++] ){
-                case '3': en_passant_square += 40; break;
-                case '6': en_passant_square += 16; break;
-                default: return false;
-            }
+    for ( int i = 0 ; i < 2; i ++) {
+        switch (fen_string[string_iterator++]){
+            case '-': i = 3 ; break;
+            case 'h': en_passant_square += 7; break;
+            case 'g': en_passant_square += 6; break;
+            case 'f': en_passant_square += 5; break;
+            case 'e': en_passant_square += 4; break;
+            case 'd': en_passant_square += 3; break;
+            case 'c': en_passant_square += 2; break;
+            case 'b': en_passant_square += 1; break;
+            case 'a': en_passant_square += 0; break;
+            case '3': en_passant_square += 40; break;
+            case '6': en_passant_square += 16; break;
+            default: return false;
+        }
     }
     if( en_passant_square != 0 )    table_state.en_passant_index = en_passant_square;
     else                            table_state.en_passant_index = -1;
