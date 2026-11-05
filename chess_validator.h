@@ -61,8 +61,36 @@ struct TableState {
         AvailableMoveIterator* next = nullptr;
     };
     AvailableMoveIterator *first = nullptr , *last = nullptr;
-    
-    void operator=( const TableState& other ){
+
+    void clear_available_moves(){
+        AvailableMoveIterator* it = first;
+        while( it ){
+            AvailableMoveIterator* next = it->next;
+            delete it;
+            it = next;
+        }
+        first = nullptr;
+        last = nullptr;
+    }
+
+    void append_available_move( unsigned char source_index , unsigned char target_index ){
+        AvailableMoveIterator* n = new AvailableMoveIterator();
+        n->source_index = source_index;
+        n->target_index = target_index;
+        if( first == nullptr ){
+            first = n;
+            last = n;
+        } else {
+            last->next = n;
+            last = n;
+        }
+    }
+
+    TableState& operator=( const TableState& other ){
+        if( this == &other ) return *this;
+
+        clear_available_moves();
+
         for( int i = 0 ; i < 64 ; i++ )map[i] = other.map[i];
         next_color_to_play = other.next_color_to_play;
         white_king_castling = other.white_king_castling;
@@ -72,39 +100,39 @@ struct TableState {
         en_passant_index = other.en_passant_index;
         half_move_clock = other.half_move_clock;
         move_counter = other.move_counter;
-        first = nullptr;
-        last = nullptr;
+
+        for( AvailableMoveIterator* it = other.first ; it ; it = it->next )
+            append_available_move( it->source_index , it->target_index );
+
+        return *this;
     }
 
     TableState(){
+        for( int i = 0 ; i < 64 ; i++ ) map[i] = 0;
         first = nullptr;
         last = nullptr;
     }
     TableState( const TableState& other ) : TableState() {
         (*this) = other;
-        first = nullptr;
-        last = nullptr;
     }
     ~TableState(){
-        auto it = first;
-        while(it){
-            auto temp = it->next;
-            delete it;
-            it = temp;
-        }
+        clear_available_moves();
     };
 };
 
-char buff[512];
+inline bool            get_table_state( const char* fen_string , TableState* ptr_table_state ){
+    if( !fen_string || !ptr_table_state ) return false;
 
-bool            get_table_state( const char* fen_string , TableState* ptr_table_state ){
     unsigned int string_iterator    = 0; 
     unsigned int map_iterator   = 0;
     unsigned int string_size    = 0;
 
-    while( fen_string[string_size++] != '\0' ){};
+    const unsigned int max_fen_length = 512;
+    while( string_size < max_fen_length && fen_string[string_size] != '\0' ) string_size++;
+    if( string_size == max_fen_length ) return false;
     
     TableState& table_state = *ptr_table_state;
+    table_state.clear_available_moves();
 
     for( int i = 0 ; i< 64 ; i++ ) table_state.map[i] = SQUARE::NONE;
 
@@ -276,19 +304,12 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
     return true;
 
 }
-void            push_available_move( TableState* ptr_table_state , unsigned char source_index , unsigned char target_index ){
-    TableState::AvailableMoveIterator* n = new TableState::AvailableMoveIterator();
-    n->source_index = source_index;
-    n->target_index = target_index;
-    if( ptr_table_state->first == nullptr ){
-        ptr_table_state->first = n;
-        ptr_table_state->last = n;
-    } else {
-        ptr_table_state->last->next = n;
-        ptr_table_state->last = n;
-    }
+inline void            push_available_move( TableState* ptr_table_state , unsigned char source_index , unsigned char target_index ){
+    if( !ptr_table_state ) return;
+    ptr_table_state->append_available_move( source_index , target_index );
 };
-int             get_index_from_notation( const char* str ){
+inline int             get_index_from_notation( const char* str ){
+    if( !str || !str[0] || !str[1] ) return -1;
     int ret = 0;
     switch( str[0] ){
         case 'a': ret += 0; break;
@@ -299,6 +320,7 @@ int             get_index_from_notation( const char* str ){
         case 'f': ret += 5; break;
         case 'g': ret += 6; break;
         case 'h': ret += 7; break;
+        default: return -1;
     }
     switch( str[1] ){
         case '1': ret += 56;break;
@@ -309,10 +331,12 @@ int             get_index_from_notation( const char* str ){
         case '6': ret += 16;break;
         case '7': ret += 8; break;
         case '8': ret += 0; break;
+        default: return -1;
     }
     return ret;
 }
-void            get_notation_from_index( int index , char* str ){
+inline void            get_notation_from_index( int index , char* str ){
+    if( !str || index < 0 || index >= 64 ) return;
     int x = index % 8;
     int y = index / 8;
     switch (x){
@@ -327,7 +351,14 @@ void            get_notation_from_index( int index , char* str ){
     }
     str[1] = (8-y) + 48;
 }
-const char*     to_fen_string( TableState* ptr_table_state ){
+inline const char*     to_fen_string( TableState* ptr_table_state ){
+    // Per-thread buffer: the returned string stays valid until the next call
+    // to to_fen_string on the same thread.
+    static thread_local char buff[512];
+    if( !ptr_table_state ){
+        buff[0] = '\0';
+        return buff;
+    }
     int string_iterator = 0;
     for( int y = 0 ; y < 8 ; y++ )
     for( int white_space_count = 0 , x = 0 ; x < 8 ; x++ )
@@ -409,10 +440,14 @@ const char*     to_fen_string( TableState* ptr_table_state ){
 
     return buff;
 }
-TableState      apply_move( TableState* ptr_table_state , int source_index , int target_index , int promotion_unit ){
+inline TableState      apply_move( TableState* ptr_table_state , int source_index , int target_index , int promotion_unit ){
     // Assumes that move is valid. Unexpected behavior if not!
+    if( !ptr_table_state ) return TableState();
+    if( source_index < 0 || source_index >= 64 || target_index < 0 || target_index >= 64 )
+        return *ptr_table_state;
     TableState& old_state = *ptr_table_state;
     TableState ret = *ptr_table_state;
+    ret.clear_available_moves(); // cached moves belong to the previous position
     int delta_index = target_index - source_index;
     int source_square = old_state.map[source_index];
     int target_square = old_state.map[target_index];
@@ -526,10 +561,14 @@ TableState      apply_move( TableState* ptr_table_state , int source_index , int
 
     return ret;
 }
-TableState      apply_move( TableState* ptr_table_state , const char* move ){
+inline TableState      apply_move( TableState* ptr_table_state , const char* move ){
     // Assumes that move is valid. Unexpected behavior if not!
+    if( !ptr_table_state ) return TableState();
+    if( !move ) return *ptr_table_state;
     int source_index = get_index_from_notation( move );
+    if( source_index < 0 || !move[2] || !move[3] ) return *ptr_table_state;
     int target_index = get_index_from_notation( &(move[2]) );
+    if( target_index < 0 ) return *ptr_table_state;
     int promotion = 0;
     switch( move[4] ){
         case 'q': promotion = TYPE_QUEEN; break;
@@ -541,13 +580,14 @@ TableState      apply_move( TableState* ptr_table_state , const char* move ){
     
     return apply_move( ptr_table_state , source_index , target_index , promotion );
 }
-const char*     apply_move( const char* fen_string , const char* move ){
+inline const char*     apply_move( const char* fen_string , const char* move ){
     TableState ts;
     if( !get_table_state(fen_string,&ts) ) return nullptr;
     ts = apply_move( &ts , move );
     return to_fen_string(&ts);
 }
-int64           fill_available_targets( TableState* ptr_table_state , int player_color ){
+inline int64           fill_available_targets( TableState* ptr_table_state , int player_color ){
+    if( !ptr_table_state ) return 0;
     int64 ret = 0;
     for( int y = 0 ; y < 8 ; y++ )
     for( int x = 0 ; x < 8 ; x++ )
@@ -630,17 +670,22 @@ int64           fill_available_targets( TableState* ptr_table_state , int player
     }
     return ret;
 }
-bool            is_king_in_check(TableState* ptr_table_state , int king_color ){
+inline bool            is_king_in_check(TableState* ptr_table_state , int king_color ){
+    if( !ptr_table_state ) return false;
     TableState& table_state = *ptr_table_state;
     int king_index=-1;
     for( int i = 0 ; i < 64 && king_index==-1 ; i++ )
         if( table_state.map[i] == (TYPE_KING|king_color) )
             king_index = i;
+    if( king_index < 0 ) return false;
     int opponent_color = ( (king_color == COLOR_BLACK) ?(COLOR_WHITE):(COLOR_BLACK));
     int64 danger_zone = fill_available_targets(ptr_table_state,opponent_color);
     return danger_zone & (1ULL<<king_index);
 }
-INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index , int target_index  ){
+inline INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index , int target_index  ){
+    if( !ptr_table_state ) return INVALID_UNIT_MOVE;
+    if( source_index < 0 || source_index >= 64 || target_index < 0 || target_index >= 64 )
+        return INVALID_UNIT_MOVE;
     TableState& table_state = *ptr_table_state;
     if( target_index == source_index ) return SAME_PLACE;
 
@@ -751,20 +796,22 @@ INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index 
     
     return VALID;
 }
-INVALID_REASON  is_move_invalid( TableState* ptr_table_state , const char* move  ){
-    int source_index = 0 ;
-    int target_index = 0 ;
-    source_index = get_index_from_notation(move);
-    target_index = get_index_from_notation(&move[2]);
+inline INVALID_REASON  is_move_invalid( TableState* ptr_table_state , const char* move  ){
+    if( !ptr_table_state || !move ) return INVALID_UNIT_MOVE;
+    int source_index = get_index_from_notation(move);
+    if( source_index < 0 || !move[2] || !move[3] ) return INVALID_UNIT_MOVE;
+    int target_index = get_index_from_notation(&move[2]);
+    if( target_index < 0 ) return INVALID_UNIT_MOVE;
     return is_move_invalid(ptr_table_state,source_index,target_index);
 }
-INVALID_REASON  is_move_invalid( const char* fen_string , const char* move  ){
+inline INVALID_REASON  is_move_invalid( const char* fen_string , const char* move  ){
     TableState table_state;
     if( !get_table_state( fen_string , &table_state ) ) return INVALID_FEN_STRING;
     return is_move_invalid(&table_state, move );
 }
 
-void            fill_valid_moves( TableState* ptr_table_state ){
+inline void            fill_valid_moves( TableState* ptr_table_state ){
+    if( !ptr_table_state ) return;
     if( ptr_table_state->first ) return;
     
     for( int y = 0 ; y < 8 ; y++ )
@@ -849,18 +896,20 @@ void            fill_valid_moves( TableState* ptr_table_state ){
     }
 }
 
-bool            is_check_mate( TableState* ptr_table_state ){
+inline bool            is_check_mate( TableState* ptr_table_state ){
+    if( !ptr_table_state ) return false;
     if( is_king_in_check(ptr_table_state,ptr_table_state->next_color_to_play) == false ) return false;
     fill_valid_moves( ptr_table_state );
     return ptr_table_state->first == nullptr;
 }
-bool            is_check_mate( const char* fen_string ){
+inline bool            is_check_mate( const char* fen_string ){
     TableState ts;
-    get_table_state(fen_string,&ts);
+    if( !get_table_state(fen_string,&ts) ) return false;
     return is_check_mate( &ts );
 }
 
-DRAW_REASON     get_draw_reason( TableState* ptr_table_state ){
+inline DRAW_REASON     get_draw_reason( TableState* ptr_table_state ){
+    if( !ptr_table_state ) return DRAW_REASON::NO_DRAW;
     if( ptr_table_state->move_counter >= 75 ){
         return DRAW_REASON::SEVENTYFIVE_MOVES;
     }
