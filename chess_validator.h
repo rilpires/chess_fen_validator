@@ -237,26 +237,31 @@ bool            get_table_state( const char* fen_string , TableState* ptr_table_
     while( fen_string[string_iterator] == ' ' )string_iterator++;
 
     // Fourth field: EN passant field
-    int en_passant_square = 0;
-    switch (fen_string[string_iterator++]){
-        case '-': break;
-        case 'h': en_passant_square += 7; break;
-        case 'g': en_passant_square += 6; break;
-        case 'f': en_passant_square += 5; break;
-        case 'e': en_passant_square += 4; break;
-        case 'd': en_passant_square += 3; break;
-        case 'c': en_passant_square += 2; break;
-        case 'b': en_passant_square += 1; break;
-        case 'a': en_passant_square += 0; break;
-        default:
-            switch( fen_string[string_iterator++] ){
-                case '3': en_passant_square += 40; break;
-                case '6': en_passant_square += 16; break;
-                default: return false;
-            }
+    int en_passant_square = -1;
+    if( fen_string[string_iterator] == '-' ){
+        string_iterator++;
+    } else {
+        int en_passant_file;
+        switch (fen_string[string_iterator++]){
+            case 'h': en_passant_file = 7; break;
+            case 'g': en_passant_file = 6; break;
+            case 'f': en_passant_file = 5; break;
+            case 'e': en_passant_file = 4; break;
+            case 'd': en_passant_file = 3; break;
+            case 'c': en_passant_file = 2; break;
+            case 'b': en_passant_file = 1; break;
+            case 'a': en_passant_file = 0; break;
+            default: return false;
+        }
+        int en_passant_rank;
+        switch (fen_string[string_iterator++]){
+            case '3': en_passant_rank = 40; break;
+            case '6': en_passant_rank = 16; break;
+            default: return false;
+        }
+        en_passant_square = en_passant_file + en_passant_rank;
     }
-    if( en_passant_square != 0 )    table_state.en_passant_index = en_passant_square;
-    else                            table_state.en_passant_index = -1;
+    table_state.en_passant_index = en_passant_square;
     
     while( fen_string[string_iterator] == ' ' )string_iterator++;
     
@@ -668,7 +673,7 @@ INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index 
                     if( table_state.map[source_index+delta_index/2] ) 
                         return INVALID_UNIT_MOVE; // Can't jump over units
                 }
-            }
+            } else if( abs(delta_y) > 1 ) return INVALID_UNIT_MOVE;
         }
     } 
     else if ( source_square & SQUARE::TYPE_KNIGHT ){
@@ -718,6 +723,16 @@ INVALID_REASON  is_move_invalid( TableState* ptr_table_state , int source_index 
         bool any_castling = ( black_king_castling || black_queen_castling || white_king_castling || white_queen_castling );
         if( !any_castling && ( abs(delta_x)>1 || abs(delta_y)>1 ) ) 
             return INVALID_UNIT_MOVE;
+        if( any_castling ){
+            // The king cannot castle while in check...
+            if( is_king_in_check( ptr_table_state , table_state.next_color_to_play ) )
+                return INVALID_UNIT_MOVE;
+            // ...nor through a square attacked by the opponent.
+            int transit_index = source_index + ( (target_index > source_index) ? 1 : -1 );
+            TableState transit_state = apply_move( ptr_table_state , source_index , transit_index , TYPE_QUEEN );
+            if( is_king_in_check( &transit_state , table_state.next_color_to_play ) )
+                return INVALID_UNIT_MOVE;
+        }
     } 
 
     int current_player_color = ptr_table_state->next_color_to_play;
