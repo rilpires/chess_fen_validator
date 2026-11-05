@@ -6,6 +6,7 @@
 #include "chess_validator.h"
 
 #include <cstdio>
+#include <cstring>
 
 using namespace chess_validator;
 
@@ -56,6 +57,21 @@ static void expect_move( const char* fen , const char* move , INVALID_REASON exp
     }
 }
 
+static void expect_fen_after_move( const char* fen , const char* move , const char* expected ){
+    TableState table_state;
+    if( !get_table_state( fen , &table_state ) ){
+        printf( "FAIL: could not parse FEN: %s\n" , fen );
+        failures++;
+        return;
+    }
+    TableState next_state = apply_move( &table_state , move );
+    const char* result = to_fen_string( &next_state );
+    if( strcmp( result , expected ) != 0 ){
+        printf( "FAIL: after %s expected \"%s\" but got \"%s\"\n" , move , expected , result );
+        failures++;
+    }
+}
+
 int main(){
     // Issue #4: the en-passant field was only reading the file letter, so the
     // rank digit was consumed as the half-move clock.
@@ -85,6 +101,17 @@ int main(){
     // Legal castling must still be accepted.
     expect_move( "k7/8/8/8/8/8/8/4K2R w K - 0 1" , "e1g1" , VALID );
     expect_move( "7k/8/8/8/8/8/8/R3K3 w Q - 0 1" , "e1c1" , VALID );
+
+    // En passant capture must remove the captured pawn from the board.
+    expect_move( "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1" , "d4e3" , VALID );
+    expect_fen_after_move( "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1" , "d4e3" ,
+                           "rnbqkbnr/ppp1pppp/8/8/8/4p3/PPPP1PPP/RNBQKBNR w KQkq - 0 2" );
+    expect_move( "rnbqkbnr/pppp1ppp/8/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 2" , "d5e6" , VALID );
+    expect_fen_after_move( "rnbqkbnr/pppp1ppp/8/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6 0 2" , "d5e6" ,
+                           "rnbqkbnr/pppp1ppp/4P3/8/8/8/PPP1PPPP/RNBQKBNR b KQkq - 0 2" );
+    // Both the capturing pawn and the captured pawn leave the 5th rank, so
+    // the en passant capture exposes the white king to the rook and is illegal.
+    expect_move( "k7/8/8/K2pP2r/8/8/8/8 w - d6 0 1" , "e5d6" , KING_IN_CHECK );
 
     if( failures ){
         printf( "\n%d test(s) failed\n" , failures );

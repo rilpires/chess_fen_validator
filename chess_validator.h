@@ -468,7 +468,15 @@ TableState      apply_move( TableState* ptr_table_state , int source_index , int
 
     ret.map[source_index] = 0;
     ret.map[target_index] = old_state.map[source_index];
-    
+
+    // En passant capture: the captured pawn is not on the target square, but
+    // directly behind it (from the capturing pawn's point of view).
+    if( (source_square&TYPE_PAWN) && !target_square && target_index == old_state.en_passant_index
+        && ( abs(delta_index)==7 || abs(delta_index)==9 ) ){
+        int captured_index = target_index + ( (source_square&COLOR_WHITE) ? 8 : -8 );
+        ret.map[captured_index] = 0;
+    }
+
     // Promotion
     if( (source_square&TYPE_PAWN) ){
         bool promoting = false;
