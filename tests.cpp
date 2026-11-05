@@ -1,7 +1,7 @@
 // Regression tests for the issues reported in #3, #4 and #5.
 //
 // Build and run:
-//   g++ -std=c++17 -o tests tests.cpp && ./tests
+//   g++ -std=c++17 -o tests tests.cpp tests_linkage.cpp && ./tests
 
 #include "chess_validator.h"
 
@@ -11,6 +11,143 @@
 using namespace chess_validator;
 
 static int failures = 0;
+
+static int count_moves( const TableState& table_state ){
+    int count = 0;
+    for( auto it = table_state.first ; it ; it = it->next ) count++;
+    return count;
+}
+
+static void expect_move_list_semantics(){
+    const char* fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    TableState a , b;
+    get_table_state( fen , &a );
+    get_table_state( fen , &b );
+    fill_valid_moves( &a );
+    fill_valid_moves( &b );
+
+    int a_count = count_moves( a );
+    int b_count = count_moves( b );
+    if( a_count == 0 || b_count == 0 ){
+        printf( "FAIL: fill_valid_moves produced no moves (%d/%d)\n" , a_count , b_count );
+        failures++;
+        return;
+    }
+
+    b = a;
+    if( count_moves( b ) != a_count ){
+        printf( "FAIL: assignment did not copy the move list (%d vs %d)\n" , count_moves( b ) , a_count );
+        failures++;
+    }
+
+    a = a; // self-assignment must keep the list intact
+    if( count_moves( a ) != a_count ){
+        printf( "FAIL: self-assignment changed the move list (%d vs %d)\n" , count_moves( a ) , a_count );
+        failures++;
+    }
+
+    // A state produced by apply_move must not carry the previous move cache.
+    TableState moved = apply_move( &a , "e2e4" );
+    if( count_moves( moved ) != 0 ){
+        printf( "FAIL: apply_move carried stale available moves\n" );
+        failures++;
+    }
+
+    // Re-parsing a FEN into the same object must also invalidate the cache.
+    get_table_state( fen , &a );
+    if( count_moves( a ) != 0 ){
+        printf( "FAIL: get_table_state kept stale available moves\n" );
+        failures++;
+    }
+}
+
+static void expect_missing_king_is_not_check(){
+    TableState table_state;
+    if( !get_table_state( "k7/8/8/8/8/8/8/8 w - - 0 1" , &table_state ) ){
+        printf( "FAIL: could not parse FEN without a white king\n" );
+        failures++;
+        return;
+    }
+    if( is_king_in_check( &table_state , COLOR_WHITE ) ){
+        printf( "FAIL: a missing king was reported as in check\n" );
+        failures++;
+    }
+}
+
+static void expect_malformed_moves_rejected(){
+    const char* fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    TableState table_state;
+    get_table_state( fen , &table_state );
+
+    const char* moves[] = { "" , "e" , "e2" , "e2e" , "z9z9" , "e2e9" };
+    for( const char* move : moves ){
+        INVALID_REASON result = is_move_invalid( &table_state , move );
+        if( result != INVALID_UNIT_MOVE ){
+            printf( "FAIL: malformed move \"%s\" returned %d\n" , move , result );
+            failures++;
+        }
+    }
+}
+
+static void expect_null_and_range_safety(){
+    const char* fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    TableState table_state;
+    get_table_state( fen , &table_state );
+
+    if( get_table_state( nullptr , &table_state ) ){
+        printf( "FAIL: get_table_state accepted a null FEN\n" );
+        failures++;
+    }
+    if( get_table_state( fen , nullptr ) ){
+        printf( "FAIL: get_table_state accepted a null state\n" );
+        failures++;
+    }
+    if( to_fen_string( nullptr )[0] != '\0' ){
+        printf( "FAIL: to_fen_string(nullptr) did not return an empty string\n" );
+        failures++;
+    }
+    if( is_king_in_check( nullptr , COLOR_WHITE ) ){
+        printf( "FAIL: is_king_in_check(nullptr) returned true\n" );
+        failures++;
+    }
+    if( is_move_invalid( (TableState*)nullptr , "e2e4" ) != INVALID_UNIT_MOVE ){
+        printf( "FAIL: is_move_invalid(nullptr, ...) did not reject the move\n" );
+        failures++;
+    }
+    if( is_check_mate( (TableState*)nullptr ) ){
+        printf( "FAIL: is_check_mate(nullptr) returned true\n" );
+        failures++;
+    }
+    if( get_draw_reason( nullptr ) != NO_DRAW ){
+        printf( "FAIL: get_draw_reason(nullptr) did not return NO_DRAW\n" );
+        failures++;
+    }
+    fill_valid_moves( nullptr );
+    push_available_move( nullptr , 0 , 0 );
+
+    char notation[2] = { 'x' , 'x' };
+    get_notation_from_index( -1 , notation );
+    get_notation_from_index( 64 , notation );
+    get_notation_from_index( 0 , nullptr );
+    if( notation[0] != 'x' || notation[1] != 'x' ){
+        printf( "FAIL: get_notation_from_index wrote to an out-of-range index\n" );
+        failures++;
+    }
+
+    if( is_move_invalid( &table_state , -1 , 0 ) != INVALID_UNIT_MOVE ){
+        printf( "FAIL: is_move_invalid accepted a negative source index\n" );
+        failures++;
+    }
+    if( is_move_invalid( &table_state , 0 , 64 ) != INVALID_UNIT_MOVE ){
+        printf( "FAIL: is_move_invalid accepted an out-of-range target index\n" );
+        failures++;
+    }
+    TableState unchanged = apply_move( &table_state , -1 , 0 , TYPE_QUEEN );
+    if( unchanged.map[0] != table_state.map[0] || unchanged.map[63] != table_state.map[63] ){
+        printf( "FAIL: apply_move with an out-of-range index changed the board\n" );
+        failures++;
+    }
+}
 
 static void expect_parse( const char* fen , bool expected ){
     TableState table_state;
@@ -73,6 +210,12 @@ static void expect_fen_after_move( const char* fen , const char* move , const ch
 }
 
 int main(){
+    // Memory management and input hardening regressions.
+    expect_move_list_semantics();
+    expect_missing_king_is_not_check();
+    expect_malformed_moves_rejected();
+    expect_null_and_range_safety();
+
     // Issue #4: the en-passant field was only reading the file letter, so the
     // rank digit was consumed as the half-move clock.
     expect_parse( "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" , true );
